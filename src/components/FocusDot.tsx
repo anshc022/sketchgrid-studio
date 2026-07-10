@@ -17,7 +17,8 @@ export function FocusDot() {
           exit={{ opacity: 0, scale: 0.6 }}
           transition={{ duration: 0.2 }}
           onClick={() => setFocus(false)}
-          className="fixed bottom-6 right-6 z-[150] w-14 h-14 rounded-full bg-[#5FB6E8]/20 border border-[#5FB6E8]/40 backdrop-blur-sm flex items-center justify-center active:scale-90 transition-transform"
+          className="fixed right-6 z-[150] w-14 h-14 rounded-full bg-[#5FB6E8]/20 border border-[#5FB6E8]/40 backdrop-blur-sm flex items-center justify-center active:scale-90 transition-transform"
+          style={{ bottom: 'calc(24px + env(safe-area-inset-bottom, 0px))' }}
           aria-label="Exit focus mode"
         >
           <Eye size={20} className="text-[#5FB6E8]" />

@@ -35,17 +35,20 @@ export function TopBar({ onExport, zoomPct, onZoomCycle }: TopBarProps) {
 
   return (
     <div
-      className="fixed top-0 left-0 right-0 z-40 flex items-center gap-2 px-3"
+      className="fixed top-0 left-0 right-0 z-40 flex items-center gap-1.5 sm:gap-2 px-2 sm:px-3"
       style={{
-        height: 56,
+        height: 'calc(56px + env(safe-area-inset-top, 0px))',
+        paddingTop: 'env(safe-area-inset-top, 0px)',
         background: 'rgba(32,30,28,0.88)',
         backdropFilter: 'blur(16px)',
         borderBottom: '1px solid rgba(255,255,255,0.08)',
       }}
     >
-      {/* Wordmark */}
-      <div className="flex items-center gap-0.5 mr-2 flex-shrink-0">
-        <span className="font-bold text-[#EDEAE3] text-base tracking-tight">Sketch</span>
+      {/* Wordmark — "SG" on phones, "SketchG" on larger screens */}
+      <div className="flex items-center gap-0.5 mr-1 sm:mr-2 flex-shrink-0">
+        <span className="font-bold text-[#EDEAE3] text-base tracking-tight">
+          S<span className="hidden sm:inline">ketch</span>
+        </span>
         <span className="font-bold text-[#5FB6E8] text-base tracking-tight">G</span>
       </div>
 
@@ -88,7 +91,7 @@ export function TopBar({ onExport, zoomPct, onZoomCycle }: TopBarProps) {
         <button
           type="button"
           onClick={onZoomCycle}
-          className="h-9 px-2.5 rounded-lg bg-white/8 hover:bg-white/14 transition-all text-xs font-semibold text-[#EDEAE3] tabular-nums min-w-[52px] text-center active:scale-95"
+          className="h-9 px-1.5 sm:px-2.5 rounded-lg bg-white/8 hover:bg-white/14 transition-all text-xs font-semibold text-[#EDEAE3] tabular-nums min-w-[44px] sm:min-w-[52px] text-center active:scale-95"
           aria-label="Cycle zoom level"
         >
           {zoomPct}%

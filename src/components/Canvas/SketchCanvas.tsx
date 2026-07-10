@@ -2,8 +2,9 @@
 import Konva from 'konva';
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { useStore } from '@/store/useStore';
-import { clamp, LETTERS } from '@/lib/utils';
-import type { CropRect, GridSettings } from '@/types';
+import { clamp, effectiveCols, colLabel } from '@/lib/utils';
+import { useIsMobile, canvasOffsets } from '@/hooks/useIsMobile';
+import type { CropRect } from '@/types';
 
 interface SketchCanvasProps {
   processedCanvas: HTMLCanvasElement | null;
@@ -42,6 +43,8 @@ export function SketchCanvas({
   const locked = useStore((s) => s.locked);
   const setCrop = useStore((s) => s.setCrop);
   const cropAspect = useStore((s) => s.cropAspect);
+  const isMobile = useIsMobile();
+  const offsets = canvasOffsets(isMobile);
 
   const gridRef = useRef(grid);
   useEffect(() => { gridRef.current = grid; }, [grid]);
@@ -79,6 +82,19 @@ export function SketchCanvas({
 
   const getImgDims = useCallback((): Dims | null => dimsRef.current, []);
 
+  // ---- Reference pane (split view) ----
+  const syncZoom = useStore((s) => s.syncZoom);
+  const refPaneRef = useRef<HTMLDivElement>(null);
+  const refCanvasElRef = useRef<HTMLCanvasElement>(null);
+  const refViewRef = useRef<ViewState>({ x: 0, y: 0, scale: 1 });
+  const refPointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const refPinchRef = useRef<{ dist: number; scale: number } | null>(null);
+  const syncFromMainRef = useRef<(() => void) | null>(null);
+  const splitStateRef = useRef({ split, syncZoom });
+  useEffect(() => {
+    splitStateRef.current = { split, syncZoom };
+  }, [split, syncZoom]);
+
   const applyView = useCallback(
     (v: ViewState) => {
       viewRef.current = v;
@@ -90,6 +106,8 @@ export function SketchCanvas({
       s.scaleY(v.scale);
       s.batchDraw();
       onViewChange(Math.round(v.scale * 100));
+      const { split: sp, syncZoom: sy } = splitStateRef.current;
+      if (sp && sy) syncFromMainRef.current?.();
     },
     [onViewChange]
   );
@@ -129,6 +147,192 @@ export function SketchCanvas({
     },
     [applyView]
   );
+
+  // ---- Reference pane drawing & sync ----
+  const drawRefPane = useCallback(() => {
+    const cv = refCanvasElRef.current;
+    const pane = refPaneRef.current;
+    if (!cv || !pane || !orientedCanvas) return;
+    const r = pane.getBoundingClientRect();
+    const w = Math.max(1, Math.round(r.width));
+    const h = Math.max(1, Math.round(r.height));
+    if (cv.width !== w || cv.height !== h) {
+      cv.width = w;
+      cv.height = h;
+    }
+    const ctx = cv.getContext('2d')!;
+    const v = refViewRef.current;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    ctx.setTransform(v.scale, 0, 0, v.scale, v.x, v.y);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(orientedCanvas, 0, 0);
+  }, [orientedCanvas]);
+
+  const fitRefView = useCallback(() => {
+    const pane = refPaneRef.current;
+    if (!pane || !orientedCanvas) return;
+    const r = pane.getBoundingClientRect();
+    const pad = 40;
+    const s = clamp(
+      Math.min((r.width - pad) / orientedCanvas.width, (r.height - pad) / orientedCanvas.height),
+      0.02,
+      32
+    );
+    refViewRef.current = {
+      scale: s,
+      x: (r.width - orientedCanvas.width * s) / 2,
+      y: (r.height - orientedCanvas.height * s) / 2,
+    };
+    drawRefPane();
+  }, [orientedCanvas, drawRefPane]);
+
+  // Map between the main (processed/cropped, possibly downscaled) space
+  // and the reference (oriented, uncropped) space.
+  const cropMap = useCallback(() => {
+    if (!orientedCanvas || !processedCanvas) return null;
+    const cx = crop?.x ?? 0;
+    const cy = crop?.y ?? 0;
+    const cw = crop?.w ?? orientedCanvas.width;
+    const k = processedCanvas.width / Math.max(1, cw); // processed px per oriented px
+    return { cx, cy, k };
+  }, [orientedCanvas, processedCanvas, crop]);
+
+  const syncRefFromMain = useCallback(() => {
+    const m = cropMap();
+    if (!m) return;
+    const v = viewRef.current;
+    const s = v.scale * m.k;
+    refViewRef.current = { scale: s, x: v.x - m.cx * s, y: v.y - m.cy * s };
+    drawRefPane();
+  }, [cropMap, drawRefPane]);
+
+  useEffect(() => {
+    syncFromMainRef.current = syncRefFromMain;
+  }, [syncRefFromMain]);
+
+  const syncMainFromRef = useCallback(() => {
+    const m = cropMap();
+    if (!m) return;
+    const rv = refViewRef.current;
+    const scale = rv.scale / m.k;
+    applyView({
+      scale: clamp(scale, 0.02, 32),
+      x: rv.x + m.cx * rv.scale,
+      y: rv.y + m.cy * rv.scale,
+    });
+  }, [cropMap, applyView]);
+
+  const afterRefGesture = useCallback(() => {
+    drawRefPane();
+    if (splitStateRef.current.syncZoom) syncMainFromRef();
+  }, [drawRefPane, syncMainFromRef]);
+
+  // Reference pane gestures: 1-finger pan, 2-finger pinch, wheel zoom
+  const onRefPointerDown = useCallback((e: React.PointerEvent) => {
+    if (useStore.getState().locked) return;
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    const r = refPaneRef.current!.getBoundingClientRect();
+    refPointersRef.current.set(e.pointerId, { x: e.clientX - r.left, y: e.clientY - r.top });
+    if (refPointersRef.current.size === 2) {
+      const pts = [...refPointersRef.current.values()];
+      refPinchRef.current = {
+        dist: Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y),
+        scale: refViewRef.current.scale,
+      };
+    }
+  }, []);
+
+  const onRefPointerMove = useCallback(
+    (e: React.PointerEvent) => {
+      const p = refPointersRef.current.get(e.pointerId);
+      if (!p) return;
+      const r = refPaneRef.current!.getBoundingClientRect();
+      const nx = e.clientX - r.left;
+      const ny = e.clientY - r.top;
+      const P = refPointersRef.current;
+
+      if (P.size === 1) {
+        refViewRef.current.x += nx - p.x;
+        refViewRef.current.y += ny - p.y;
+        P.set(e.pointerId, { x: nx, y: ny });
+        afterRefGesture();
+      } else if (P.size === 2 && refPinchRef.current) {
+        P.set(e.pointerId, { x: nx, y: ny });
+        const pts = [...P.values()];
+        const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+        const mx = (pts[0].x + pts[1].x) / 2;
+        const my = (pts[0].y + pts[1].y) / 2;
+        const v = refViewRef.current;
+        const newScale = clamp(
+          refPinchRef.current.scale * (dist / Math.max(20, refPinchRef.current.dist)),
+          0.02,
+          32
+        );
+        const f = newScale / v.scale;
+        v.x = mx - (mx - v.x) * f;
+        v.y = my - (my - v.y) * f;
+        v.scale = newScale;
+        afterRefGesture();
+      }
+      e.preventDefault();
+    },
+    [afterRefGesture]
+  );
+
+  const onRefPointerUp = useCallback((e: React.PointerEvent) => {
+    refPointersRef.current.delete(e.pointerId);
+    if (refPointersRef.current.size < 2) refPinchRef.current = null;
+  }, []);
+
+  const onRefWheel = useCallback(
+    (e: React.WheelEvent) => {
+      if (useStore.getState().locked) return;
+      e.preventDefault();
+      const r = refPaneRef.current!.getBoundingClientRect();
+      const mx = e.clientX - r.left;
+      const my = e.clientY - r.top;
+      const v = refViewRef.current;
+      if (e.ctrlKey || e.metaKey) {
+        const newScale = clamp(v.scale * Math.exp(-e.deltaY * 0.01), 0.02, 32);
+        const f = newScale / v.scale;
+        v.x = mx - (mx - v.x) * f;
+        v.y = my - (my - v.y) * f;
+        v.scale = newScale;
+      } else {
+        v.x -= e.deltaX;
+        v.y -= e.deltaY;
+      }
+      afterRefGesture();
+    },
+    [afterRefGesture]
+  );
+
+  // When split turns on (or the image changes while split), lay out both panes
+  useEffect(() => {
+    if (!split) return;
+    const raf = requestAnimationFrame(() => {
+      fitView();
+      if (splitStateRef.current.syncZoom) syncRefFromMain();
+      else fitRefView();
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [split, orientedCanvas, fitView, fitRefView, syncRefFromMain]);
+
+  // Redraw ref pane when sync engages or pane resizes
+  useEffect(() => {
+    if (!split) return;
+    if (syncZoom) syncRefFromMain();
+    const pane = refPaneRef.current;
+    if (!pane) return;
+    const ro = new ResizeObserver(() => {
+      if (splitStateRef.current.syncZoom) syncRefFromMain();
+      else drawRefPane();
+    });
+    ro.observe(pane);
+    return () => ro.disconnect();
+  }, [split, syncZoom, syncRefFromMain, drawRefPane]);
 
   // Initialize Konva stage
   useEffect(() => {
@@ -179,7 +383,8 @@ export function SketchCanvas({
         const dims = dimsRef.current;
         if (!G.on || !dims) return;
         const { W, H } = dims;
-        const cw = W / G.cols;
+        const nCols = effectiveCols(G);
+        const cw = W / nCols;
         const rows = Math.max(1, Math.round(H / cw));
         const currentScale = stageRef.current?.scaleX() ?? 1;
         const raw = (ctx as unknown as { _context: CanvasRenderingContext2D })._context;
@@ -190,7 +395,7 @@ export function SketchCanvas({
         raw.lineWidth = G.width / currentScale;
         raw.globalAlpha = G.opacity;
         raw.beginPath();
-        for (let i = 0; i <= G.cols; i++) {
+        for (let i = 0; i <= nCols; i++) {
           raw.moveTo(i * cw, 0);
           raw.lineTo(i * cw, H);
         }
@@ -204,7 +409,7 @@ export function SketchCanvas({
         // Diagonals
         if (G.diag) {
           raw.beginPath();
-          for (let col = 0; col < G.cols; col++) {
+          for (let col = 0; col < nCols; col++) {
             for (let row = 0; row < rows; row++) {
               const x0 = col * cw;
               const y0 = row * cw;
@@ -292,9 +497,9 @@ export function SketchCanvas({
             raw.fillText(txt, tx, ty + fs * 0.05);
           };
 
-          // Column letters along the visible top; keep the label inside
+          // Column labels along the visible top; keep the label inside
           // the viewport for whichever columns are on screen
-          for (let col = 0; col < G.cols; col++) {
+          for (let col = 0; col < nCols; col++) {
             const c0 = col * cw;
             const c1 = (col + 1) * cw;
             if (c1 < vx0 || c0 > vx1) continue; // column not visible
@@ -303,7 +508,7 @@ export function SketchCanvas({
               Math.max(vx0, c0) + pillR,
               Math.min(vx1, c1) - pillR
             );
-            pill(tx, topY, LETTERS[col % 26] ?? String(col + 1));
+            pill(tx, topY, colLabel(col, nCols));
           }
           // Row numbers along the visible left, same clamping per row
           for (let row = 0; row < rows; row++) {
@@ -743,35 +948,51 @@ export function SketchCanvas({
     cropDragRef.current = null;
   };
 
-  // Split view
-  if (split && processedCanvas && orientedCanvas) {
-    return (
-      <div className="absolute inset-0 flex" style={{ top: 56, bottom: 56, left: 72 }}>
-        {/* Left: clean reference */}
-        <div className="flex-1 relative bg-[#1A1918] border-r border-white/10 overflow-hidden">
-          <SplitPane canvas={orientedCanvas} label="Reference" />
-        </div>
-        {/* Right: processed + grid */}
-        <div className="flex-1 relative bg-[#232120] overflow-hidden">
-          <SplitPane canvas={processedCanvas} label="Grid" showGrid grid={grid} />
-        </div>
-      </div>
-    );
-  }
-
   const cropScreenRect = cropping ? getCropScreenRect() : null;
+  const showSplit = split && !!orientedCanvas && !cropping;
 
   return (
-    <div
-      ref={containerRef}
-      className="absolute inset-0 overflow-hidden"
-      style={{ top: 56, bottom: 56, left: 72, cursor: cropping ? 'default' : 'grab' }}
-      onPointerDown={!cropping ? handlePointerDown : undefined}
-      onPointerMove={!cropping ? handlePointerMove : undefined}
-      onPointerUp={!cropping ? handlePointerUp : undefined}
-      onPointerCancel={!cropping ? handlePointerUp : undefined}
-    >
+    <div className="absolute inset-0 flex flex-col sm:flex-row" style={offsets}>
+      {/* Reference pane — live pan/zoom, optionally synced to the grid pane.
+          Rendered first so it sits left (landscape) or top (portrait). */}
+      {showSplit && (
+        <div
+          ref={refPaneRef}
+          className="flex-1 relative bg-[#1A1918] border-b sm:border-b-0 sm:border-r border-white/10 overflow-hidden touch-none"
+          onPointerDown={onRefPointerDown}
+          onPointerMove={onRefPointerMove}
+          onPointerUp={onRefPointerUp}
+          onPointerCancel={onRefPointerUp}
+          onWheel={onRefWheel}
+          style={{ cursor: 'grab' }}
+        >
+          <canvas ref={refCanvasElRef} className="absolute inset-0" />
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 pointer-events-none">
+            <span className="text-xs text-[#A39D93] bg-black/40 rounded-full px-3 py-1">
+              Reference
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Main (grid) pane — the Konva stage lives here permanently */}
+      <div
+        ref={containerRef}
+        className="flex-1 relative overflow-hidden"
+        style={{ cursor: cropping ? 'default' : 'grab' }}
+        onPointerDown={!cropping ? handlePointerDown : undefined}
+        onPointerMove={!cropping ? handlePointerMove : undefined}
+        onPointerUp={!cropping ? handlePointerUp : undefined}
+        onPointerCancel={!cropping ? handlePointerUp : undefined}
+      >
       {/* Konva canvas is mounted into containerRef by Konva.Stage */}
+      {showSplit && (
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 pointer-events-none z-10">
+          <span className="text-xs text-[#A39D93] bg-black/40 rounded-full px-3 py-1">
+            Grid
+          </span>
+        </div>
+      )}
 
       {/* Crop overlay */}
       {cropping && cropScreenRect && (
@@ -860,6 +1081,7 @@ export function SketchCanvas({
           />
         </div>
       )}
+      </div>
     </div>
   );
 }
@@ -871,120 +1093,4 @@ function getCursor(handle: string): string {
     sw: 'sw-resize', w: 'w-resize', move: 'move',
   };
   return map[handle] ?? 'pointer';
-}
-
-// Simple split pane component
-function SplitPane({
-  canvas,
-  label,
-  showGrid,
-  grid,
-}: {
-  canvas: HTMLCanvasElement;
-  label: string;
-  showGrid?: boolean;
-  grid?: GridSettings;
-}) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-
-  useEffect(() => {
-    const c = canvasRef.current;
-    if (!c || !canvas) return;
-    const parent = c.parentElement;
-    if (!parent) return;
-    const draw = () => {
-      const { width, height } = parent.getBoundingClientRect();
-      if (width < 1 || height < 1) return;
-      c.width = width;
-      c.height = height;
-      const ctx = c.getContext('2d')!;
-      const scale = Math.min((width - 24) / canvas.width, (height - 24) / canvas.height);
-      const dw = canvas.width * scale;
-      const dh = canvas.height * scale;
-      const dx = (width - dw) / 2;
-      const dy = (height - dh) / 2;
-      ctx.clearRect(0, 0, width, height);
-      ctx.drawImage(canvas, dx, dy, dw, dh);
-
-      if (showGrid && grid?.on) {
-        const cw = dw / grid.cols;
-        const rows = Math.max(1, Math.round(dh / cw));
-        ctx.save();
-        ctx.translate(dx, dy);
-        ctx.strokeStyle = grid.color;
-        ctx.lineWidth = Math.max(1, grid.width * 0.75);
-        ctx.globalAlpha = grid.opacity;
-        ctx.beginPath();
-        for (let i = 0; i <= grid.cols; i++) {
-          ctx.moveTo(i * cw, 0);
-          ctx.lineTo(i * cw, dh);
-        }
-        for (let j = 0; j <= rows; j++) {
-          const y = Math.min(j * cw, dh);
-          ctx.moveTo(0, y);
-          ctx.lineTo(dw, y);
-        }
-        ctx.stroke();
-        if (grid.diag) {
-          ctx.globalAlpha = grid.opacity * 0.5;
-          ctx.beginPath();
-          for (let i = 0; i < grid.cols; i++)
-            for (let j = 0; j < rows; j++) {
-              const x0 = i * cw;
-              const y0 = j * cw;
-              const y1 = Math.min((j + 1) * cw, dh);
-              ctx.moveTo(x0, y0);
-              ctx.lineTo(x0 + cw, y1);
-              ctx.moveTo(x0 + cw, y0);
-              ctx.lineTo(x0, y1);
-            }
-          ctx.stroke();
-        }
-        if (grid.radial) {
-          ctx.globalAlpha = grid.opacity * 0.6;
-          ctx.beginPath();
-          ctx.moveTo(dw / 2, 0); ctx.lineTo(dw / 2, dh);
-          ctx.moveTo(0, dh / 2); ctx.lineTo(dw, dh / 2);
-          ctx.moveTo(0, 0); ctx.lineTo(dw, dh);
-          ctx.moveTo(dw, 0); ctx.lineTo(0, dh);
-          ctx.stroke();
-        }
-        if (grid.labels && cw > 26) {
-          const fs = 11;
-          ctx.globalAlpha = 1;
-          ctx.font = `600 ${fs}px -apple-system, sans-serif`;
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          for (let i = 0; i < grid.cols; i++) {
-            const tx = (i + 0.5) * cw;
-            ctx.fillStyle = 'rgba(0,0,0,0.5)';
-            ctx.fillRect(tx - fs * 0.7, fs * 0.2, fs * 1.4, fs * 1.4);
-            ctx.fillStyle = grid.color;
-            ctx.fillText(LETTERS[i % 26], tx, fs * 0.9);
-          }
-          for (let j = 0; j < rows; j++) {
-            const ty = Math.min((j + 0.5) * cw, dh - fs);
-            ctx.fillStyle = 'rgba(0,0,0,0.5)';
-            ctx.fillRect(fs * 0.2, ty - fs * 0.7, fs * 1.4, fs * 1.4);
-            ctx.fillStyle = grid.color;
-            ctx.fillText(String(j + 1), fs * 0.9, ty);
-          }
-        }
-        ctx.restore();
-      }
-    };
-    draw();
-    const ro = new ResizeObserver(draw);
-    ro.observe(parent);
-    return () => ro.disconnect();
-  }, [canvas, showGrid, grid]);
-
-  return (
-    <>
-      <canvas ref={canvasRef} className="absolute inset-0" />
-      <div className="absolute top-3 left-1/2 -translate-x-1/2">
-        <span className="text-xs text-[#A39D93] bg-black/40 rounded-full px-3 py-1">{label}</span>
-      </div>
-    </>
-  );
 }

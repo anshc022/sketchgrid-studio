@@ -1,7 +1,7 @@
 import type { Project } from '@/types';
 import { mkCanvas, pixelOps, cssFilterString } from './imageProcessing';
 import { cropRect } from './imageProcessing';
-import { clamp, LETTERS } from './utils';
+import { clamp, effectiveCols, colLabel } from './utils';
 
 interface ExportOptions {
   scale: number;
@@ -45,7 +45,8 @@ export function buildExportCanvas(
   // Grid overlay
   if (opt.grid && project.grid.on) {
     const G = project.grid;
-    const cw = dw / G.cols;
+    const nCols = effectiveCols(G);
+    const cw = dw / nCols;
     const rows = Math.max(1, Math.round(dh / cw));
 
     ctx.save();
@@ -55,7 +56,7 @@ export function buildExportCanvas(
 
     // Main grid
     ctx.beginPath();
-    for (let i = 0; i <= G.cols; i++) {
+    for (let i = 0; i <= nCols; i++) {
       ctx.moveTo(i * cw, 0);
       ctx.lineTo(i * cw, dh);
     }
@@ -69,7 +70,7 @@ export function buildExportCanvas(
     // Diagonals
     if (G.diag) {
       ctx.beginPath();
-      for (let col = 0; col < G.cols; col++) {
+      for (let col = 0; col < nCols; col++) {
         for (let row = 0; row < rows; row++) {
           const x0 = col * cw;
           const y0 = row * cw;
@@ -123,8 +124,8 @@ export function buildExportCanvas(
       ctx.fillStyle = G.color;
 
       // Column labels
-      for (let col = 0; col < G.cols; col++) {
-        const letter = LETTERS[col % 26] ?? String(col + 1);
+      for (let col = 0; col < nCols; col++) {
+        const letter = colLabel(col, nCols);
         const tx = (col + 0.5) * cw;
         const ty = fs * 0.8;
         const pw = fs * 1.2;

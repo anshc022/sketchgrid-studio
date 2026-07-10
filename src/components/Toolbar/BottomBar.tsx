@@ -18,7 +18,7 @@ export function BottomBar({ onZoomIn, onZoomOut, onFitAll }: BottomBarProps) {
 
   return (
     <div
-      className="fixed bottom-0 left-0 right-0 z-40 flex items-center justify-center gap-2 px-4"
+      className="hidden sm:flex fixed bottom-0 left-0 right-0 z-40 items-center justify-center gap-2 px-4"
       style={{
         height: 56,
         background: 'rgba(32,30,28,0.88)',

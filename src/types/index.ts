@@ -1,6 +1,10 @@
 export interface GridSettings {
   on: boolean;
+  /** 'cols': fixed column count. 'mm': derive squares from paper size / cell size */
+  mode: 'cols' | 'mm';
   cols: number;
+  /** physical cell size in millimetres (used in 'mm' mode) */
+  sizeMm: number;
   width: number;
   color: string;
   opacity: number;

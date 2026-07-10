@@ -27,7 +27,9 @@ export function defaultProject(): Project {
     crop: null,
     grid: {
       on: true,
+      mode: 'cols',
       cols: 5,
+      sizeMm: 15,
       width: 2,
       color: '#5FB6E8',
       opacity: 0.8,
