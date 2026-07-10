@@ -27,9 +27,9 @@ export function defaultProject(): Project {
     crop: null,
     grid: {
       on: true,
-      mode: 'cols',
+      mode: 'mm',
       cols: 5,
-      sizeMm: 15,
+      sizeMm: 42, // A4 portrait / 42mm = 5 columns
       width: 2,
       color: '#5FB6E8',
       opacity: 0.8,

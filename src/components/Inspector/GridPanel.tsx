@@ -24,12 +24,22 @@ export function GridPanel() {
     commit();
   };
 
-  const mode = grid.mode ?? 'cols';
-  const sizeMm = grid.sizeMm ?? 15;
   const nCols = effectiveCols(grid);
   const [pw, ph] = paperDims(grid.paper, grid.paperOrient);
   const nRows = Math.max(1, Math.round(ph / (pw / nCols)));
-  const mm = mode === 'mm' ? sizeMm : cellMm(grid.cols, grid.paper, grid.paperOrient);
+  const mm =
+    grid.mode === 'mm'
+      ? grid.sizeMm ?? 15
+      : cellMm(grid.cols, grid.paper, grid.paperOrient);
+
+  // Columns and cell size are two handles on the same grid: setting one
+  // recomputes the other from the current paper, and paper changes
+  // always re-grid immediately.
+  const setCols = (v: number) =>
+    update({ mode: 'mm', cols: v, sizeMm: Math.max(2, Math.round(pw / v)) });
+  const setSizeMm = (v: number) => update({ mode: 'mm', sizeMm: v });
+  const setPaper = (key: string) => update({ mode: 'mm', paper: key });
+  const setOrient = (o: 'v' | 'h') => update({ mode: 'mm', paperOrient: o });
 
   return (
     <div className="space-y-1">
@@ -41,52 +51,23 @@ export function GridPanel() {
 
       <div className="h-px bg-white/8 my-2" />
 
-      {/* Grid sizing mode */}
-      <div className="py-1">
-        <p className="text-xs text-[#A39D93] mb-3 font-medium">Grid size by</p>
-        <div className="flex gap-2">
-          {(
-            [
-              { v: 'cols', label: 'Columns' },
-              { v: 'mm', label: 'Cell size (mm)' },
-            ] as const
-          ).map(({ v, label }) => (
-            <button
-              key={v}
-              type="button"
-              onClick={() => update({ mode: v })}
-              className={cn(
-                'flex-1 h-11 rounded-lg text-sm font-medium transition-all active:scale-95',
-                mode === v
-                  ? 'bg-[#5FB6E8] text-[#0E2836]'
-                  : 'bg-white/8 text-[#EDEAE3] hover:bg-white/14'
-              )}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      </div>
+      <Slider
+        label="Columns"
+        min={2}
+        max={40}
+        value={Math.min(40, nCols)}
+        onValueChange={setCols}
+        format={() => String(nCols)}
+      />
 
-      {mode === 'cols' ? (
-        <Slider
-          label="Columns"
-          min={2}
-          max={16}
-          value={grid.cols}
-          onValueChange={(v) => update({ cols: v })}
-          format={(v) => String(v)}
-        />
-      ) : (
-        <Slider
-          label="Size of 1 cell"
-          min={2}
-          max={60}
-          value={sizeMm}
-          onValueChange={(v) => update({ sizeMm: v })}
-          format={(v) => `${v} mm`}
-        />
-      )}
+      <Slider
+        label="Size of 1 cell"
+        min={2}
+        max={60}
+        value={mm}
+        onValueChange={setSizeMm}
+        format={(v) => `${v} mm`}
+      />
 
       <Slider
         label="Line weight"
@@ -165,7 +146,7 @@ export function GridPanel() {
             <button
               key={key}
               type="button"
-              onClick={() => update({ paper: key })}
+              onClick={() => setPaper(key)}
               className={cn(
                 'flex-shrink-0 h-9 px-3 rounded-lg text-sm font-medium transition-all',
                 grid.paper === key
@@ -187,7 +168,7 @@ export function GridPanel() {
             <button
               key={o}
               type="button"
-              onClick={() => update({ paperOrient: o })}
+              onClick={() => setOrient(o)}
               className={cn(
                 'flex-1 h-10 rounded-lg text-sm font-medium transition-all',
                 grid.paperOrient === o
