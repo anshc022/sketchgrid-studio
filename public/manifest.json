@@ -1,0 +1,13 @@
+{
+  "name": "SketchGrid Studio",
+  "short_name": "SketchGrid",
+  "description": "Reference grid tool for artists",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#232120",
+  "theme_color": "#1D1B1A",
+  "orientation": "any",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
